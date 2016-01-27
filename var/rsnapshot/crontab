@@ -1,0 +1,19 @@
+SHELL=/bin/bash
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=root
+HOME=/
+
+# Need to trix a bit with the start hour, so not another rsnapshot will block the start
+# of another rsnapshot.
+
+# Hourly backup
+09 */2  * * *   root    rsnapshot hourly
+
+# Daily
+06 1    * * *   root    rsnapshot hourly; rsnapshot daily
+
+# Weekly
+03 2    * * 7   root    rsnapshot hourly; rsnapshot daily; rsnapshot weekly
+
+# Monthly
+00 3    1 * *   root    rsnapshot hourly; rsnapshot daily; rsnapshot weekly; rsnapshot monthly; syco tar-backup

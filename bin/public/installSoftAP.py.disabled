@@ -1,0 +1,243 @@
+#!/usr/bin/env python
+'''
+Install a Software Wireless Access Point using airbase-ng.
+
+Requirment
+- A Backtrack 4 Final distro (LiveDVD/USB/Harddisk install is recommended, Vmware can cause problems)
+- A wireless injection-capable card (preferably with a well supported chipset like RTL8187, RT73, ..)
+- A second wired/wireless interface for an internet connection (a wired interface is recommended)
+
+Read more
+http://www.aircrack-ng.org/doku.php?id=airbase-ng
+
+Based on
+http://ubuntuforums.org/showthread.php?p=9814665
+http://www.backtrack-linux.org/forums/beginners-forum/1939-lucafas-tutorial-softap-internet-connection-mitm-sniffing.html
+http://www.backtrack-linux.org/forums/backtrack-howtos/28111-new-script-capturing-passwords-sslstrip-airssl-sh.html
+http://www.howtoforge.com/dhcp_server_linux_debian_sarge
+http://www.backtrack-linux.org/forums/backtrack-videos/32462-[script]-[video]-fakeap_pwn-v0-3-a.html
+
+'''
+
+__author__ = "daniel.lindh@cybercow.se"
+__copyright__ = "Copyright 2011, The System Console project"
+__maintainer__ = "Daniel Lindh"
+__email__ = "syco@cybercow.se"
+__credits__ = ["???"]
+__license__ = "???"
+__version__ = "1.0.0"
+__status__ = "Production"
+
+import app, general, version
+
+# The version of this module, used to prevent
+# the same script version to be executed more then
+# once on the same host.
+SCRIPT_VERSION = 1
+
+def build_commands(commands):
+  '''
+  Defines the commands that can be executed through the syco.py shell script.
+
+  '''
+  commands.add("install-softap",   install_softap,   help="Install a Software Wireless Access Point using airbase-ng.")
+  commands.add("uninstall-softap", uninstall_softap, help="Uninstall the Software Wireless Access Point using airbase-ng.")
+
+def install_softap(args):
+  '''
+  The main installation function.
+
+  '''
+  app.print_verbose("Install SoftAp version: %d" % SCRIPT_VERSION)
+
+  try:
+    version_obj = version.Version("InstallSoftAp", SCRIPT_VERSION)
+    version_obj.check_executed()
+
+    _check_linux_user("root")
+
+    #
+    # Install software
+    #
+    #apt-get install Aircrack-ng
+    #apt-get install Macchanger
+    # dhcpd3 server with a GUI interface to make life easy
+    #apt-get install GADMIN-DHCPD
+
+    # Establish an internet connection
+    dhclient eth0
+
+    #
+    # Start wlan1 into monitor mode and change the mac address to cover your butt.
+    #
+    # starts wlan1 into monitor mode mon0
+    airmon-ng start wlan1
+
+    # Takes mon0 down so we can change the mac
+    ifconfig mon0 down
+
+    # Use a fake mac.
+    macchanger -r -m DE:AD:C0:DE:BA:5E mon0
+
+    # Brings mon0 back up
+    ifconfig mon0 up
+
+    #
+    # Test your mon0 to make sure it can packet inject and bring up airbase-ng.
+    #
+    # When airbase-ng comes up you will notice it created at0, this is where
+    # the airbase comunicates with any other program you wish. at0 could be
+    # routed though a packet sniffer or pointed at an internal dns or http server.
+    # For now we will point at0 at eth0 so that all traffic on at0 can go out to
+    # the internet though your box.
+    #
+
+    # Is test mode should return "Injection is Working!"
+    aireplay-ng -9 mon0
+
+    # Brings airbase-ng up on channel 1 with a name of testap
+    airbase-ng -c 1 -e testap mon0&
+
+    # Assign an IP, netmask, gateway and set route for at0:
+    # (at0 is the TAP interface that's auto-created by airbase)
+
+    ifconfig at0 up
+    ifconfig at0 192.168.2.129 netmask 255.255.255.128
+    route add -net 192.168.2.128 netmask 255.255.255.128 gw 192.168.2.129
+
+    #
+    # Setup local dhcp
+    #
+    #
+    # Setting up the DHCPD server.
+    # This has to be configured to your box using your specified ip numbers.
+    #
+     f = open('/tmp/workfile', 'w')
+     f.write("""
+sudo gedit "/root/dhcpd.conf"
+#
+# My version
+# http://www.daemon-systems.org/man/dhcpd.conf.5.html
+#
+
+# The DHCP server has the ability to dynamically update the Domain  Name
+# System. We are not using that.
+ddns-update-style none;
+
+# The length in seconds that will be assigned to a lease if  the client
+# requesting the lease does not ask for a specific expi-ration time.
+default-lease-time 600;
+
+# The maximum length in seconds that will be assigned to a lease. The
+# only exception to this is  that  Dynamic  BOOTP  lease lengths,  which
+# are  not specified by the client, are not limited by this maximum.
+max-lease-time 7200;
+
+# If this is not set this means that if a client requests an address
+# that the server knows nothing about and the address is incorrect for
+# that network segment, the server will _not_ send a DHCPNAK (which
+# tells the client it should stop using the address.) We don't want this
+# so we set authoritative.
+authoritative;
+
+subnet 192.168.2.128 netmask 255.255.255.128 {
+  # ??interface at0;
+
+  # The subnet mask the DHCP server should assign to requesting clients
+  option subnet-mask 255.255.255.128;
+  # The broadcast-address the DHCP server should assign to requesting clients
+  option broadcast-address 192.168.2.255;
+  # The gateway the DHCP server should assign to requesting clients
+  option routers 192.168.2.129;
+  # The DNS-resolver the DHCP server should assign to requesting clients
+  option domain-name-servers 192.168.0.1;
+  # The ip range from which the DHCP server should assign ip-numbers
+  # to requesting clients
+  range 192.168.2.130 192.168.2.140;
+}
+""")
+    f.close()
+
+    # Start dhcp
+    mkdir -p /var/run/dhcpd && chown dhcpd:dhcpd /var/run/dhcpd
+    echo > '/var/lib/dhcp3/dhcpd.leases'
+    dhcpd3 -d -f -cf dhcpd2.conf -pf /var/run/dhcpd/dhcpd.pid at0&
+
+    #
+    # Now we will set up IP tables to send the traffic from your softAP to eth0.
+    #
+
+    # iptables cleanup
+    iptables --flush
+    iptables --table nat --flush
+    iptables --delete-chain
+    iptables --table nat --delete-chain
+
+    # DNS
+    #iptables -t nat -A PREROUTING -p udp --dport 53 -j DNAT --to 192.168.0.1
+    iptables -t nat -A PREROUTING -p udp -j DNAT --to 192.168.0.1
+
+    # gateway to ext. router
+    iptables --table nat --append POSTROUTING --out-interface eth0 -j MASQUERADE
+
+    # rogue gateway
+    iptables --append FORWARD --in-interface at0 -j ACCEPT
+
+    # protect LAN from WLAN (DROP/REJECT)
+    #iptables -t nat -A PREROUTING -s 192.168.1.128/25 -d 192.168.1.0/25 -j DROP
+
+    # What?
+    iptables -t nat -A PREROUTING -p tcp --destination-port 80 -j REDIRECT --to-ports 10000
+
+
+
+iptables -F
+iptables -F INPUT
+iptables -F OUTPUT
+iptables -F POSTROUTING -t nat
+iptables -F PREROUTING -t nat
+echo 1 > /proc/sys/net/ipv4/ip_forward
+iptables -P FORWARD ACCEPT
+iptables -A POSTROUTING -t nat -s 192.168.2.0/24 -o wlan0 -j MASQUERADE
+
+
+    # This line has to be ran after any update to IP tables to activate the changes
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+
+    # TODO version_obj.mark_executed()
+  except Exception, error_text:
+    app.print_error("Failed to install SoftAp")
+    app.print_error(error_text)
+    traceback.print_exc(file=sys.stdout)
+
+  _delete_install_dir()
+
+def uninstall_softap(args):
+  '''
+  The main uninstall function.
+
+  '''
+  app.print_verbose("Uninstall softap version: %d" % SCRIPT_VERSION)
+
+  #if (_is_glassfish_user_installed()):
+    #general.shell_exec_p("/etc/init.d/glassfish stop", user="glassfish")
+
+  version_obj = version.Version("InstallSoftAp", SCRIPT_VERSION)
+  version_obj.mark_uninstalled()
+
+def _check_linux_user(required_user):
+  '''
+  Check if script is executed as root, raise Exception if not.
+
+  '''
+  user = general.shell_exec_p("whoami")
+  if (required_user != user)
+    raise Exception("Invalid user, you are " + user + " but need to be " + required_user)
+
+
+
+iwconfig wlan0 essid "cybercow" mode Ad-Hoc channel
+ifconfig wlan0
+iwconfig wlan0 essid NETWORK_ID key s:WIRELESS_KEY
+dhclient wlan0
+
